@@ -125,12 +125,7 @@ func TCPReceiver(done <-chan struct{}, af string, srcAddr net.IP, targetAddr str
 	// IP + TCP header, this channel is fed from the socket
 	recv := make(chan TCPResponse)
 	go func() {
-		ipHdrSize := 0 // no IPv6 header present on TCP packets received on the raw socket
-		if af == "ip4" {
-			// IPv4 header is always included with the ipv4 raw socket receive
-			ipHdrSize = minIP4HeaderSize
-		}
-		packet := make([]byte, ipHdrSize+maxTCPHdrSize)
+		packet := make([]byte, maxTCPHdrSize)
 
 		for {
 			n, from, err := conn.ReadFrom(packet)
@@ -138,13 +133,13 @@ func TCPReceiver(done <-chan struct{}, af string, srcAddr net.IP, targetAddr str
 				break // parent has closed the socket likely
 			}
 
-			// IP + TCP header size
-			if n < ipHdrSize+minTCPHdrSize {
+			// TCP header size
+			if n < minTCPHdrSize {
 				continue
 			}
 
 			// is that from the target port we expect?
-			tcpHdr := parseTCPHeader(packet[ipHdrSize:n])
+			tcpHdr := parseTCPHeader(packet[:n])
 			if int(tcpHdr.Source) != targetPort {
 				continue
 			}
@@ -239,7 +234,7 @@ func ICMPReceiver(done <-chan struct{}, af string, srcAddr net.IP) (chan interfa
 				break
 			}
 			// extract the 8 bytes of the original TCP header
-			if n < icmpHdrSize+minInnerIPHdrSize+minTCPHdrSize {
+			if n < icmpHdrSize+minInnerIPHdrSize+8 {
 				continue
 			}
 			// not ttl exceeded
@@ -382,7 +377,7 @@ func Sender(done <-chan struct{}, srcAddr net.IP, af, dest string, dstPort, base
 				return
 			}
 		}
-		glog.V(2).Infoln("Sender done")
+		glog.V(2).Infof("Sender for ttl %d done\n", ttl)
 	}()
 
 	return out, nil
@@ -460,8 +455,13 @@ func printLossyPaths(sent, rcvd map[int] /* src port */ []int, hops map[int] /* 
 			data[ttl] = make([]string, 2*(maxOffset-i*maxColumns)+1)
 			data[ttl][0] = fmt.Sprintf("%d", ttl+1)
 			for j, srcPort := range allPorts[i*maxColumns : maxOffset] {
-				data[ttl][2*j+1] = hops[srcPort][ttl]
-				data[ttl][2*j+2] = fmt.Sprintf("%02d/%02d", sent[srcPort][ttl], rcvd[srcPort][ttl])
+				if len(hops[srcPort]) > ttl {
+					data[ttl][2*j+1] = hops[srcPort][ttl]
+					data[ttl][2*j+2] = fmt.Sprintf("%02d/%02d", sent[srcPort][ttl], rcvd[srcPort][ttl])
+				} else {
+					data[ttl][2*j+1] = "---"
+					data[ttl][2*j+2] = "--/--"
+				}
 			}
 		}
 
@@ -646,13 +646,13 @@ func main() {
 			// a port mapped to a short WAN path, and it would tell us to terminate
 			// probing at higher TTL, thus cutting visibility on "long" paths
 			// however, this mostly concerned that last few hops...
-			for i := resp.ttl; i < lastClosed; i++ {
+			/* for i := resp.ttl; i < lastClosed; i++ {
 				close(senderDone[i])
 			}
 			// update the last closed ttl, so we don't double-close the channels
 			if resp.ttl < lastClosed {
 				lastClosed = resp.ttl
-			}
+			}*/
 			rcvd[resp.srcPort][resp.ttl-1]++
 			hops[resp.srcPort][resp.ttl-1] = target
 		}
